@@ -29,6 +29,11 @@ type Client interface {
 	GetGitBundle(namespace, name, ref, revision string) ([]byte, error)
 	GetStateGraph(namespace string, layer string) ([]byte, error)
 	PutStateGraph(namespace string, layer string, graph []byte) error
+	GetTerraformState(namespace string, layer string) ([]byte, error)
+	PutTerraformState(namespace string, layer string, state []byte) error
+	LockTerraformState(namespace string, layer string, lockInfo []byte) ([]byte, error)
+	GetTerraformStateLock(namespace string, layer string) ([]byte, error)
+	UnlockTerraformState(namespace string, layer string, lockInfo []byte) error
 }
 
 type DefaultClient struct {
@@ -366,4 +371,66 @@ func (c *DefaultClient) GetStateGraph(namespace string, layer string) ([]byte, e
 		return nil, err
 	}
 	return b, nil
+}
+
+func (c *DefaultClient) GetTerraformState(namespace, layer string) ([]byte, error) {
+	return c.stateRequest(namespace, layer, http.MethodGet, nil)
+}
+
+func (c *DefaultClient) PutTerraformState(namespace, layer string, state []byte) error {
+	_, err := c.stateRequest(namespace, layer, http.MethodPost, bytes.NewReader(state))
+	return err
+}
+
+func (c *DefaultClient) LockTerraformState(namespace, layer string, lockInfo []byte) ([]byte, error) {
+	return c.lockRequest(namespace, layer, http.MethodPost, lockInfo)
+}
+
+func (c *DefaultClient) GetTerraformStateLock(namespace, layer string) ([]byte, error) {
+	return c.lockRequest(namespace, layer, http.MethodGet, nil)
+}
+
+func (c *DefaultClient) UnlockTerraformState(namespace, layer string, lockInfo []byte) error {
+	_, err := c.lockRequest(namespace, layer, http.MethodDelete, lockInfo)
+	return err
+}
+
+func (c *DefaultClient) stateRequest(namespace, layer, method string, body io.Reader) ([]byte, error) {
+	req, err := c.buildRequest("/api/state", url.Values{"namespace": {namespace}, "layer": {layer}}, method, body)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &storageerrors.StorageError{Err: fmt.Errorf("Terraform state not found"), Nil: true}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("could not access Terraform state: status %d", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func (c *DefaultClient) lockRequest(namespace, layer, method string, lockInfo []byte) ([]byte, error) {
+	req, err := c.buildRequest("/api/state/lock", url.Values{"namespace": {namespace}, "layer": {layer}}, method, bytes.NewReader(lockInfo))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return body, fmt.Errorf("could not access Terraform state lock: status %d", resp.StatusCode)
+	}
+	return body, nil
 }

@@ -2,6 +2,8 @@ package base
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
 
 	c "github.com/padok-team/burrito/internal/utils/cmd"
@@ -82,6 +84,33 @@ func (t *BaseTool) StatePull(workingDir string) ([]byte, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func (t *BaseTool) StatePush(workingDir string, state []byte) error {
+	stateFile, err := os.CreateTemp("", "burrito-state-*.tfstate")
+	if err != nil {
+		return fmt.Errorf("create temporary state file: %w", err)
+	}
+	statePath := stateFile.Name()
+	if _, err := stateFile.Write(state); err != nil {
+		closeErr := stateFile.Close()
+		removeErr := os.Remove(statePath)
+		return errors.Join(fmt.Errorf("write temporary state file: %w", err), closeErr, removeErr)
+	}
+	if err := stateFile.Close(); err != nil {
+		removeErr := os.Remove(statePath)
+		return errors.Join(fmt.Errorf("close temporary state file: %w", err), removeErr)
+	}
+	cmd := exec.Command(t.ExecPath, "state", "push", statePath)
+	cmd.Dir = workingDir
+	if err := cmd.Run(); err != nil {
+		removeErr := os.Remove(statePath)
+		return errors.Join(fmt.Errorf("push datastore state into local backend: %w", err), removeErr)
+	}
+	if err := os.Remove(statePath); err != nil {
+		return fmt.Errorf("remove temporary state file: %w", err)
+	}
+	return nil
 }
 
 func (t *BaseTool) GetExecPath() string {

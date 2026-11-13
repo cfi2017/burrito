@@ -27,7 +27,9 @@ type MockClient struct {
 	// Store bundles in memory for testing
 	bundles map[string][]byte
 	// Store state graphs in memory for testing
-	stateGraphs map[string][]byte
+	stateGraphs     map[string][]byte
+	terraformStates map[string][]byte
+	terraformLocks  map[string][]byte
 }
 
 func NewMockClient() *MockClient {
@@ -35,7 +37,9 @@ func NewMockClient() *MockClient {
 		revisions: make(map[string]string),
 		bundles:   make(map[string][]byte),
 
-		stateGraphs: make(map[string][]byte),
+		stateGraphs:     make(map[string][]byte),
+		terraformStates: make(map[string][]byte),
+		terraformLocks:  make(map[string][]byte),
 	}
 }
 
@@ -124,5 +128,46 @@ func (c *MockClient) GetStateGraph(namespace string, layer string) ([]byte, erro
 
 func (c *MockClient) PutStateGraph(namespace string, layer string, graph []byte) error {
 	c.stateGraphs[fmt.Sprintf("%s/%s", namespace, layer)] = graph
+	return nil
+}
+
+func (c *MockClient) GetTerraformState(namespace, layer string) ([]byte, error) {
+	key := fmt.Sprintf("%s/%s", namespace, layer)
+	state, ok := c.terraformStates[key]
+	if !ok {
+		return nil, &storageerrors.StorageError{Err: fmt.Errorf("Terraform state not found"), Nil: true}
+	}
+	return state, nil
+}
+
+func (c *MockClient) PutTerraformState(namespace, layer string, state []byte) error {
+	c.terraformStates[fmt.Sprintf("%s/%s", namespace, layer)] = state
+	return nil
+}
+
+func (c *MockClient) LockTerraformState(namespace, layer string, lockInfo []byte) ([]byte, error) {
+	key := fmt.Sprintf("%s/%s", namespace, layer)
+	if lock, ok := c.terraformLocks[key]; ok {
+		return lock, fmt.Errorf("Terraform state is locked")
+	}
+	c.terraformLocks[key] = lockInfo
+	return lockInfo, nil
+}
+
+func (c *MockClient) GetTerraformStateLock(namespace, layer string) ([]byte, error) {
+	lock, ok := c.terraformLocks[fmt.Sprintf("%s/%s", namespace, layer)]
+	if !ok {
+		return nil, &storageerrors.StorageError{Err: fmt.Errorf("Terraform state is not locked"), Nil: true}
+	}
+	return lock, nil
+}
+
+func (c *MockClient) UnlockTerraformState(namespace, layer string, _ []byte) error {
+	key := fmt.Sprintf("%s/%s", namespace, layer)
+	_, ok := c.terraformLocks[key]
+	if !ok {
+		return fmt.Errorf("Terraform state is not locked")
+	}
+	delete(c.terraformLocks, key)
 	return nil
 }

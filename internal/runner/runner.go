@@ -2,15 +2,21 @@ package runner
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	configv1alpha1 "github.com/padok-team/burrito/api/v1alpha1"
 	"github.com/padok-team/burrito/internal/burrito/config"
 	datastore "github.com/padok-team/burrito/internal/datastore/client"
+	storageerrors "github.com/padok-team/burrito/internal/datastore/storage/error"
 	"github.com/padok-team/burrito/internal/runner/tools"
 	"github.com/padok-team/burrito/internal/utils"
 	runnerutils "github.com/padok-team/burrito/internal/utils/runner"
@@ -51,13 +57,83 @@ func (r *Runner) Exec() error {
 		return err
 	}
 
-	err = r.ExecInit()
+	explicitBackend, err := hasExplicitBackend(r.workingDir, r.repoDir, r.exec.TenvName())
 	if err != nil {
-		log.Errorf("error executing init: %s", err)
 		return err
 	}
+	if explicitBackend {
+		if err := r.ExecInit(); err != nil {
+			log.Errorf("error executing init: %s", err)
+			return err
+		}
+		return r.ExecAction()
+	}
 
-	return r.ExecAction()
+	return r.execWithDatastoreState()
+}
+
+func (r *Runner) execWithDatastoreState() (runErr error) {
+	lockID := make([]byte, 24)
+	if _, err := rand.Read(lockID); err != nil {
+		return fmt.Errorf("generate datastore state lock ID: %w", err)
+	}
+	action := "OperationTypePlan"
+	if r.config.Runner.Action == "apply" {
+		action = "OperationTypeApply"
+	}
+	lockInfo, err := json.Marshal(struct {
+		ID        string `json:"ID"`
+		Operation string `json:"Operation"`
+		Who       string `json:"Who"`
+		Path      string `json:"Path"`
+		Created   string `json:"Created"`
+	}{
+		ID:        hex.EncodeToString(lockID),
+		Operation: action,
+		Who:       fmt.Sprintf("%s/%s/%s", r.Layer.Namespace, r.Layer.Name, r.Run.Name),
+		Path:      fmt.Sprintf("layers/%s/%s/terraform.tfstate", r.Layer.Namespace, r.Layer.Name),
+		Created:   time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return fmt.Errorf("encode datastore state lock: %w", err)
+	}
+	lockInfo, err = r.Datastore.LockTerraformState(r.Layer.Namespace, r.Layer.Name, lockInfo)
+	if err != nil {
+		return fmt.Errorf("lock datastore state: %w", err)
+	}
+	defer func() {
+		if err := r.Datastore.UnlockTerraformState(r.Layer.Namespace, r.Layer.Name, lockInfo); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("unlock datastore state: %w", err))
+		}
+	}()
+
+	state, err := r.Datastore.GetTerraformState(r.Layer.Namespace, r.Layer.Name)
+	if err != nil && !storageerrors.NotFound(err) {
+		return fmt.Errorf("get datastore state: %w", err)
+	}
+	if err := r.ExecInit(); err != nil {
+		return err
+	}
+	if len(state) > 0 {
+		if err := r.exec.StatePush(r.workingDir, state); err != nil {
+			return fmt.Errorf("load datastore state into local backend: %w", err)
+		}
+	}
+
+	operationErr := r.ExecAction()
+	updatedState, pullErr := r.exec.StatePull(r.workingDir)
+	if pullErr != nil {
+		return errors.Join(operationErr, fmt.Errorf("pull updated state: %w", pullErr))
+	}
+	if len(updatedState) > 0 {
+		if !json.Valid(updatedState) {
+			return errors.Join(operationErr, errors.New("OpenTofu returned invalid state JSON"))
+		}
+		if err := r.Datastore.PutTerraformState(r.Layer.Namespace, r.Layer.Name, updatedState); err != nil {
+			return errors.Join(operationErr, fmt.Errorf("store updated state in datastore: %w", err))
+		}
+	}
+	return operationErr
 }
 
 // Initialize the runner clients (kubernetes, datastore).

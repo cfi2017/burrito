@@ -6,6 +6,7 @@ type BaseExec interface {
 	Apply(string) error
 	Show(string, string) ([]byte, error)
 	StatePull(string) ([]byte, error)
+	StatePush(string, []byte) error
 	TenvName() string
 	GetExecPath() string
 }

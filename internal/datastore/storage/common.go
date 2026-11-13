@@ -24,6 +24,7 @@ const (
 	ShortDiffFile          string = "short.diff"
 	GitBundleFileExtension string = ".gitbundle"
 	StateGraphFile         string = "stategraph.json"
+	TerraformStateFile     string = "terraform.tfstate"
 	RevisionFile           string = "latest"
 	LayersPrefix           string = "layers"
 	RepositoriesPrefix     string = "repositories"
@@ -53,6 +54,10 @@ func computePlanKey(namespace string, layer string, run string, attempt string, 
 
 func computeStateGraphKey(namespace string, layer string) string {
 	return fmt.Sprintf("%s/%s/%s/%s", LayersPrefix, namespace, layer, StateGraphFile)
+}
+
+func computeTerraformStateKey(namespace string, layer string) string {
+	return fmt.Sprintf("%s/%s/%s/%s", LayersPrefix, namespace, layer, TerraformStateFile)
 }
 
 func computeGitBundleKey(namespace string, repository string, branch string, revision string) string {
@@ -252,6 +257,25 @@ func (s *Storage) PutStateGraph(namespace string, layer string, graph []byte) er
 	err = s.Backend.Set(computeStateGraphKey(namespace, layer), dataToStore, 0)
 	if err != nil {
 		return fmt.Errorf("failed to store state graph: %w", err)
+	}
+	return nil
+}
+
+func (s *Storage) GetTerraformState(namespace, layer string) ([]byte, error) {
+	data, err := s.Backend.Get(computeTerraformStateKey(namespace, layer))
+	if err != nil {
+		return nil, err
+	}
+	return s.EncryptionManager.Decrypt(namespace, data)
+}
+
+func (s *Storage) PutTerraformState(namespace, layer string, state []byte) error {
+	data, err := s.EncryptionManager.Encrypt(namespace, state)
+	if err != nil {
+		return err
+	}
+	if err := s.Backend.Set(computeTerraformStateKey(namespace, layer), data, 0); err != nil {
+		return fmt.Errorf("failed to store Terraform state: %w", err)
 	}
 	return nil
 }
