@@ -2,6 +2,7 @@ package datastore
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -72,7 +73,17 @@ func (s *Datastore) Exec() {
 	sc := echo.StartConfig{Address: s.Config.Datastore.Addr}
 	var err error
 	if s.Config.Datastore.TLS {
-		err = sc.StartTLS(ctx, e, DefaultCertPath, DefaultKeyPath)
+		cert, readErr := os.ReadFile(DefaultCertPath)
+		if readErr != nil {
+			err = fmt.Errorf("could not read datastore TLS certificate: %w", readErr)
+		} else {
+			key, readErr := os.ReadFile(DefaultKeyPath)
+			if readErr != nil {
+				err = fmt.Errorf("could not read datastore TLS private key: %w", readErr)
+			} else {
+				err = sc.StartTLS(ctx, e, cert, key)
+			}
+		}
 	} else {
 		err = sc.Start(ctx, e)
 	}
